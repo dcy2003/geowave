@@ -1,7 +1,5 @@
 package mil.nga.giat.geowave.adapter.vector.plugin;
 
-import mil.nga.giat.geowave.core.geotime.GeometryUtils;
-
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.log4j.Logger;
 import org.geotools.filter.visitor.NullFilterVisitor;
@@ -24,6 +22,7 @@ import org.opengis.filter.PropertyIsNotEqualTo;
 import org.opengis.filter.PropertyIsNull;
 import org.opengis.filter.expression.Add;
 import org.opengis.filter.expression.Divide;
+import org.opengis.filter.expression.Expression;
 import org.opengis.filter.expression.Function;
 import org.opengis.filter.expression.Literal;
 import org.opengis.filter.expression.Multiply;
@@ -48,6 +47,9 @@ import org.opengis.referencing.operation.TransformException;
 import com.vividsolutions.jts.geom.Envelope;
 import com.vividsolutions.jts.geom.Geometry;
 import com.vividsolutions.jts.geom.GeometryFactory;
+
+import mil.nga.giat.geowave.core.geotime.store.query.SpatialConstraints;
+import mil.nga.giat.geowave.core.geotime.store.query.SpatialConstraintsSet;
 
 /**
  * This class can be used to get Geometry from an OpenGIS filter object. GeoWave
@@ -74,30 +76,28 @@ public class ExtractGeometryFilterVisitor extends
 			final CoordinateReferenceSystem crs ) {
 		this.crs = crs;
 	}
-
-	/**
-	 * 
-	 * @param filter
-	 * @param crs
-	 * @return null if empty constraint (infinite not supported)
-	 */
-	public static Geometry getConstraints(
-			final Filter filter,
+	
+	public static SpatialConstraintsSet getConstraints(final Filter filter,
 			CoordinateReferenceSystem crs ) {
-		final Geometry geo = (Geometry) filter.accept(
+		final Object output = filter.accept(
 				new ExtractGeometryFilterVisitor(
 						crs),
 				null);
-		if ((geo == null) || geo.isEmpty()) {
-			return null;
-		}
-		final double area = geo.getArea();
-		if (Double.isInfinite(area) || Double.isNaN(area)) {
-			return null;
-		}
-		return geo;
 
-	}
+		if (output instanceof SpatialConstraintsSet) {
+			return (SpatialConstraintsSet) output;
+		}
+		else if (output instanceof SpatialConstraints) {
+			final SpatialConstraints paramConstraint = (SpatialConstraints) output;
+			final SpatialConstraintsSet constraintSet = new SpatialConstraintsSet();
+			constraintSet.getConstraintsFor(
+					paramConstraint.getName()).replaceWithMerged(
+					paramConstraint);
+			return constraintSet;
+		}
+		return new SpatialConstraintsSet();
+	}	
+	
 
 	/**
 	 * Produce an ReferencedEnvelope from the provided data parameter.
@@ -105,27 +105,30 @@ public class ExtractGeometryFilterVisitor extends
 	 * @param data
 	 * @return ReferencedEnvelope
 	 */
-	private Geometry bbox(
+	private SpatialConstraints bbox(
 			final Object data ) {
 		try {
 			if (data == null) {
 				return null;
 			}
 			else if (data instanceof ReferencedEnvelope) {
-
-				return new GeometryFactory().toGeometry(((ReferencedEnvelope) data).transform(
+				return new SpatialConstraints(new GeometryFactory().toGeometry(((ReferencedEnvelope) data).transform(
 						crs,
-						true));
-
+						true)));
 			}
 			else if (data instanceof Envelope) {
-				return new GeometryFactory().toGeometry((Envelope) data);
+				return new SpatialConstraints(
+						new GeometryFactory().toGeometry((Envelope) data));
 			}
 			else if (data instanceof CoordinateReferenceSystem) {
-				return new GeometryFactory().toGeometry(new ReferencedEnvelope(
-						(CoordinateReferenceSystem) data).transform(
-						crs,
-						true));
+				return new SpatialConstraints(
+						new GeometryFactory().toGeometry(new ReferencedEnvelope(
+								(CoordinateReferenceSystem) data).transform(
+								crs,
+								true)));
+			}
+			else if (data instanceof SpatialConstraints) {
+				return (SpatialConstraints)data;
 			}
 		}
 		catch (TransformException | FactoryException e) {
@@ -149,32 +152,42 @@ public class ExtractGeometryFilterVisitor extends
 	public Object visit(
 			final IncludeFilter filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
-	private Geometry infinity() {
-		return GeometryUtils.infinity();
-	}
-
-	@SuppressWarnings("deprecation")
 	@Override
 	public Object visit(
 			final BBOX filter,
 			final Object data ) {
-		final Geometry bbox = bbox(data);
 
-		// consider doing reprojection here into data CRS?
-		final Envelope bounds = new Envelope(
-				filter.getMinX(),
-				filter.getMaxX(),
-				filter.getMinY(),
-				filter.getMaxY());
-		if (bbox != null) {
-			return bbox.union(new GeometryFactory().toGeometry(bounds));
+		// we have to take the reference geometry bbox and
+		// expand it by the distance.
+		// We ignore the unit of measure for the moment
+		Literal geometry = null;
+		PropertyName propertyName = null;
+		if ((filter.getExpression1() instanceof PropertyName) && (filter.getExpression2() instanceof Literal)) {
+			geometry = (Literal) filter.getExpression2();
+			propertyName = (PropertyName) filter.getExpression1();
 		}
-		else {
-			return bbox(bounds);
+		if ((filter.getExpression2() instanceof PropertyName) && (filter.getExpression1() instanceof Literal)) {
+			geometry = (Literal) filter.getExpression1();
+			propertyName = (PropertyName) filter.getExpression2();
 		}
+
+		// we cannot desume a bbox from this filter
+		if (geometry == null) {
+			return new SpatialConstraints();
+		}
+
+		Geometry geom = geometry.evaluate(
+				null,
+				Geometry.class);
+		if (geom == null) {
+			return new SpatialConstraints();
+		}
+		
+		return new SpatialConstraints(geom, 
+				propertyName.getPropertyName());
 	}
 
 	/**
@@ -194,36 +207,35 @@ public class ExtractGeometryFilterVisitor extends
 		final Object value = expression.getValue();
 		if (value instanceof Geometry) {
 			final Geometry geometry = (Geometry) value;
-			return geometry;
+			return new SpatialConstraints(geometry);
 		}
 		else {
-			LOGGER.info("LiteralExpression ignored!");
+			LOGGER.debug("LiteralExpression ignored!");
 		}
-		return bbox(data);
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final And filter,
 			final Object data ) {
-		Geometry mixed = infinity();
+		SpatialConstraintsSet constraints = new SpatialConstraintsSet();
 		for (final Filter f : filter.getChildren()) {
-			final Object obj = f.accept(
+			final Object output = f.accept(
 					this,
-					data);
-			if ((obj != null) && (obj instanceof Geometry)) {
-				final Geometry geom = (Geometry) obj;
-				final double mixedArea = mixed.getArea();
-				final double geomArea = geom.getArea();
-				if (Double.isInfinite(mixedArea) || Double.isNaN(mixedArea)) {
-					mixed = geom;
-				}
-				else if (!Double.isInfinite(geomArea) && !Double.isNaN(geomArea)) {
-					mixed = mixed.intersection(geom);
-				}
+					data);			
+			if (output instanceof SpatialConstraints) {
+				SpatialConstraints sc = (SpatialConstraints)output;
+				constraints.getConstraintsFor(
+						sc.getName()).replaceWithIntersections(
+						sc);				
+			}
+			else if (output instanceof SpatialConstraintsSet) {
+				final SpatialConstraintsSet rangeSet = (SpatialConstraintsSet) output;
+				constraints.intersectWith(rangeSet);
 			}
 		}
-		return mixed;
+		return constraints;
 	}
 
 	@Override
@@ -238,27 +250,30 @@ public class ExtractGeometryFilterVisitor extends
 		// result
 		// of !(finite envelope)
 
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final Or filter,
 			final Object data ) {
-		Geometry mixed = new GeometryFactory().toGeometry(new Envelope());
+		SpatialConstraintsSet constraints = new SpatialConstraintsSet();
 		for (final Filter f : filter.getChildren()) {
-			final Geometry geom = (Geometry) f.accept(
+			final Object output = f.accept(
 					this,
-					data);
-			final double geomArea = geom.getArea();
-			if (!Double.isInfinite(geomArea) && !Double.isNaN(geomArea)) {
-				mixed = mixed.union(geom);
+					data);			
+			if (output instanceof SpatialConstraints) {
+				SpatialConstraints sc = (SpatialConstraints)output;
+				constraints.getConstraintsFor(
+						sc.getName()).replaceWithMerged(
+						sc);				
+			}
+			else if (output instanceof SpatialConstraintsSet) {
+				final SpatialConstraintsSet rangeSet = (SpatialConstraintsSet) output;
+				constraints.mergeWith(rangeSet);
 			}
 		}
-		if (mixed.isEmpty()) {
-			return infinity();
-		}
-		return mixed;
+		return constraints;
 	}
 
 	@Override
@@ -266,33 +281,51 @@ public class ExtractGeometryFilterVisitor extends
 			final Beyond filter,
 			final Object data ) {
 		// beyond a certain distance from a finite object, no way to limit it
-		return infinity();
+		return new SpatialConstraints();
+	}
+	
+	private SpatialConstraints mergeResults(Expression left, Expression right, Object data) {
+		final SpatialConstraints leftResult = bbox(left.accept(
+				this,
+				data));
+		final SpatialConstraints rightResult = bbox(right.accept(
+				this,
+				data));
+		
+		// Just ignore if there are two named constraints.
+		if (leftResult.isNamed() && rightResult.isNamed()) {
+			return leftResult;
+		}
+
+		// Both infinite, don't care!
+		if (leftResult.isInfinite() && rightResult.isInfinite()) {
+			return new SpatialConstraints();
+		}
+
+		SpatialConstraints merged = null;
+		if (rightResult.isNamed()) {
+			merged = rightResult;
+			merged.replaceWithMerged(leftResult);
+		}
+		else {
+			merged = leftResult;
+			merged.replaceWithMerged(rightResult);
+		}
+		return merged;
 	}
 
 	@Override
 	public Object visit(
 			final Contains filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Crosses filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
@@ -301,36 +334,39 @@ public class ExtractGeometryFilterVisitor extends
 			final Object data ) {
 		// disjoint does not define a rectangle, but a hole in the
 		// Cartesian plane, no way to limit it
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final DWithin filter,
 			final Object data ) {
-		final Geometry bbox = bbox(data);
+		final SpatialConstraints bbox = bbox(data);
 
 		// we have to take the reference geometry bbox and
 		// expand it by the distance.
 		// We ignore the unit of measure for the moment
 		Literal geometry = null;
+		PropertyName propertyName = null;
 		if ((filter.getExpression1() instanceof PropertyName) && (filter.getExpression2() instanceof Literal)) {
 			geometry = (Literal) filter.getExpression2();
+			propertyName = (PropertyName) filter.getExpression1();
 		}
 		if ((filter.getExpression2() instanceof PropertyName) && (filter.getExpression1() instanceof Literal)) {
-			geometry = (Literal) filter.getExpression2();
+			geometry = (Literal) filter.getExpression1();
+			propertyName = (PropertyName) filter.getExpression2();
 		}
 
 		// we cannot desume a bbox from this filter
 		if (geometry == null) {
-			return infinity();
+			return new SpatialConstraints();
 		}
 
 		Geometry geom = geometry.evaluate(
 				null,
 				Geometry.class);
 		if (geom == null) {
-			return infinity();
+			return new SpatialConstraints();
 		}
 		Pair<Geometry, Double> geometryAndDegrees;
 		try {
@@ -350,11 +386,12 @@ public class ExtractGeometryFilterVisitor extends
 		}
 
 		if (bbox != null) {
-			return geometryAndDegrees.getLeft().union(
-					bbox);
+			return new SpatialConstraints(geometryAndDegrees.getLeft().union(
+					bbox.getGeometry()), propertyName.getPropertyName());
 		}
 		else {
-			return geometryAndDegrees.getLeft();
+			return new SpatialConstraints(geometryAndDegrees.getLeft(), 
+					propertyName.getPropertyName());
 		}
 	}
 
@@ -362,194 +399,161 @@ public class ExtractGeometryFilterVisitor extends
 	public Object visit(
 			final Equals filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Intersects filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Overlaps filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Touches filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Within filter,
 			Object data ) {
-		data = filter.getExpression1().accept(
-				this,
-				data);
-		data = filter.getExpression2().accept(
-				this,
-				data);
-
-		return data;
+		return mergeResults(filter.getExpression1(), filter.getExpression2(), data);
 	}
 
 	@Override
 	public Object visit(
 			final Add expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final Divide expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final Function expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final Id filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final Multiply expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final NilExpression expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsBetween filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsEqualTo filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsGreaterThan filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsGreaterThanOrEqualTo filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsLessThan filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsLessThanOrEqualTo filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsLike filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsNotEqualTo filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyIsNull filter,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visit(
 			final PropertyName expression,
 			final Object data ) {
-		return null;
+		String name = expression.getPropertyName();
+		return new SpatialConstraints(name);
 	}
 
 	@Override
 	public Object visit(
 			final Subtract expression,
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 	@Override
 	public Object visitNullFilter(
 			final Object data ) {
-		return infinity();
+		return new SpatialConstraints();
 	}
 
 }

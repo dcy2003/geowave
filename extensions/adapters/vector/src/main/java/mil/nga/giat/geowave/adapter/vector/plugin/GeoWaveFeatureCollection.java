@@ -3,20 +3,7 @@ package mil.nga.giat.geowave.adapter.vector.plugin;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
-
-import mil.nga.giat.geowave.adapter.vector.render.DistributableRenderer;
-import mil.nga.giat.geowave.adapter.vector.render.RenderedMaster;
-import mil.nga.giat.geowave.adapter.vector.stats.FeatureBoundingBoxStatistics;
-import mil.nga.giat.geowave.adapter.vector.stats.FeatureNumericRangeStatistics;
-import mil.nga.giat.geowave.adapter.vector.stats.FeatureTimeRangeStatistics;
-import mil.nga.giat.geowave.core.geotime.store.query.TemporalConstraintsSet;
-import mil.nga.giat.geowave.core.geotime.store.statistics.BoundingBoxDataStatistics;
-import mil.nga.giat.geowave.core.index.ByteArrayId;
-import mil.nga.giat.geowave.core.store.CloseableIterator;
-import mil.nga.giat.geowave.core.store.adapter.statistics.CountDataStatistics;
-import mil.nga.giat.geowave.core.store.adapter.statistics.DataStatistics;
 
 import org.apache.log4j.Logger;
 import org.geotools.data.DataUtilities;
@@ -39,6 +26,19 @@ import org.opengis.referencing.operation.TransformException;
 
 import com.vividsolutions.jts.geom.Geometry;
 import com.vividsolutions.jts.geom.GeometryFactory;
+
+import mil.nga.giat.geowave.adapter.vector.render.DistributableRenderer;
+import mil.nga.giat.geowave.adapter.vector.render.RenderedMaster;
+import mil.nga.giat.geowave.adapter.vector.stats.FeatureBoundingBoxStatistics;
+import mil.nga.giat.geowave.adapter.vector.stats.FeatureNumericRangeStatistics;
+import mil.nga.giat.geowave.adapter.vector.stats.FeatureTimeRangeStatistics;
+import mil.nga.giat.geowave.core.geotime.store.query.SpatialConstraintsSet;
+import mil.nga.giat.geowave.core.geotime.store.query.TemporalConstraintsSet;
+import mil.nga.giat.geowave.core.geotime.store.statistics.BoundingBoxDataStatistics;
+import mil.nga.giat.geowave.core.index.ByteArrayId;
+import mil.nga.giat.geowave.core.store.CloseableIterator;
+import mil.nga.giat.geowave.core.store.adapter.statistics.CountDataStatistics;
+import mil.nga.giat.geowave.core.store.adapter.statistics.DataStatistics;
 
 /**
  * This class is a helper for the GeoWave GeoTools data store. It represents a
@@ -346,10 +346,17 @@ public class GeoWaveFeatureCollection extends
 		if (envelope != null) {
 			return new GeometryFactory().toGeometry(envelope);
 		}
-
-		return reader.clipIndexedBBOXConstraints(ExtractGeometryFilterVisitor.getConstraints(
+		
+		// Only get geometry for the primary geometry descriptor. 
+		// TODO: we might want to enable querying on additional geometry in
+		// the future based on our query planner.
+		String attrName = reader.getFeatureType().getGeometryDescriptor().getLocalName();
+		
+		SpatialConstraintsSet set = ExtractGeometryFilterVisitor.getConstraints(
 				query.getFilter(),
-				GeoWaveGTDataStore.DEFAULT_CRS));
+				GeoWaveGTDataStore.DEFAULT_CRS);
+		
+		return reader.clipIndexedBBOXConstraints(set.getConstraintsFor(attrName).getGeometry());
 	}
 
 	private Query validateQuery(

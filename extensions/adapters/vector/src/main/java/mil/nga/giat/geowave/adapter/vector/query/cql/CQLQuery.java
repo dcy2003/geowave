@@ -22,12 +22,11 @@ import mil.nga.giat.geowave.adapter.vector.util.QueryIndexHelper;
 import mil.nga.giat.geowave.adapter.vector.utils.TimeDescriptors;
 import mil.nga.giat.geowave.core.geotime.GeometryUtils;
 import mil.nga.giat.geowave.core.geotime.GeometryUtils.GeoConstraintsWrapper;
-import mil.nga.giat.geowave.core.geotime.index.dimension.LatitudeDefinition;
-import mil.nga.giat.geowave.core.geotime.index.dimension.TimeDefinition;
 import mil.nga.giat.geowave.core.geotime.store.dimension.LatitudeField;
 import mil.nga.giat.geowave.core.geotime.store.dimension.LongitudeField;
 import mil.nga.giat.geowave.core.geotime.store.dimension.TimeField;
 import mil.nga.giat.geowave.core.geotime.store.filter.SpatialQueryFilter.CompareOperation;
+import mil.nga.giat.geowave.core.geotime.store.query.SpatialConstraintsSet;
 import mil.nga.giat.geowave.core.geotime.store.query.SpatialQuery;
 import mil.nga.giat.geowave.core.geotime.store.query.SpatialTemporalQuery;
 import mil.nga.giat.geowave.core.geotime.store.query.TemporalConstraints;
@@ -36,7 +35,6 @@ import mil.nga.giat.geowave.core.geotime.store.query.TemporalQuery;
 import mil.nga.giat.geowave.core.index.ByteArrayRange;
 import mil.nga.giat.geowave.core.index.NumericIndexStrategy;
 import mil.nga.giat.geowave.core.index.PersistenceUtils;
-import mil.nga.giat.geowave.core.index.dimension.NumericDimensionDefinition;
 import mil.nga.giat.geowave.core.index.sfc.data.MultiDimensionalNumericData;
 import mil.nga.giat.geowave.core.store.dimension.NumericDimensionField;
 import mil.nga.giat.geowave.core.store.filter.DistributableQueryFilter;
@@ -160,9 +158,13 @@ public class CQLQuery implements
 		}
 		if (baseQuery == null) {
 			// there is only space and time
-			final Geometry geometry = ExtractGeometryFilterVisitor.getConstraints(
+			String attrName = adapter.getType().getGeometryDescriptor().getLocalName();
+			
+			final SpatialConstraintsSet set = ExtractGeometryFilterVisitor.getConstraints(
 					cqlFilter,
 					adapter.getType().getCoordinateReferenceSystem());
+			
+			final Geometry geometry = set.getConstraintsFor(attrName).getGeometry();
 			final TemporalConstraintsSet timeConstraintSet = new ExtractTimeFilterVisitor(
 					adapter.getTimeDescriptors()).getConstraints(cqlFilter);
 			if (geometry != null) {

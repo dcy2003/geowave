@@ -51,6 +51,7 @@ import mil.nga.giat.geowave.adapter.vector.plugin.ExtractGeometryFilterVisitor;
 import mil.nga.giat.geowave.adapter.vector.plugin.GeoWaveGTDataStore;
 import mil.nga.giat.geowave.core.cli.api.OperationParams;
 import mil.nga.giat.geowave.core.cli.operations.config.options.ConfigOptions;
+import mil.nga.giat.geowave.core.geotime.store.query.SpatialConstraintsSet;
 import mil.nga.giat.geowave.core.store.DataStore;
 import mil.nga.giat.geowave.core.store.adapter.exceptions.MismatchedIndexToAdapterMapping;
 import mil.nga.giat.geowave.core.store.index.PrimaryIndex;
@@ -212,9 +213,16 @@ public class RasterIngestRunner extends
 			boolean cropped = false;
 			final Filter filter = landsatOptions.getCqlFilter();
 			if (filter != null) {
-				Geometry geometry = ExtractGeometryFilterVisitor.getConstraints(
+
+				// there is only space and time
+				String attrName = type.getGeometryDescriptor().getLocalName();
+				
+				final SpatialConstraintsSet set = ExtractGeometryFilterVisitor.getConstraints(
 						filter,
 						GeoWaveGTRasterFormat.DEFAULT_CRS);
+				
+				Geometry geometry = set.getConstraintsFor(attrName).getGeometry();
+				
 				if (geometry != null) {
 					// go ahead and intersect this with the scene geometry
 					final Geometry sceneShape = (Geometry) band.getAttribute(SceneFeatureIterator.SHAPE_ATTRIBUTE_NAME);

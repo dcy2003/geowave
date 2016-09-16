@@ -24,6 +24,12 @@ public class PropertyConstraintSet
 				true);
 	}
 
+	
+	
+	public Map<ByteArrayId, FilterableConstraints> getConstraints() {
+		return constraints;
+	}
+
 	public List<FilterableConstraints> getConstraintsFor(
 			final ByteArrayId[] fieldIds ) {
 		final List<FilterableConstraints> result = new LinkedList<FilterableConstraints>();
